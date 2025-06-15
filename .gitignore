@@ -26,3 +26,9 @@ htmlcov/
 
 # Python dependencies
 *.lock
+
+# Docker
+*.log
+*.db
+*.sqlite3
+*.pid

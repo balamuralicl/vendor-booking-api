@@ -1,8 +1,48 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List
-from uuid import uuid4
+from app.routers import user, vendor, booking
+
+# OpenTelemetry Tracing
+from opentelemetry import trace
+from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+
+from app.db.session import engine
+import logging
+from app.utils.logging import OpenTelemetryLoggingFilter
+
+# Setup logger with Otel trace context
+formatter = logging.Formatter(
+    '%(asctime)s %(levelname)s [%(name)s] [trace_id=%(otelTraceID)s span_id=%(otelSpanID)s] %(message)s'
+)
+handler = logging.StreamHandler()
+handler.setFormatter(formatter)
+handler.addFilter(OpenTelemetryLoggingFilter())
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+logger.addHandler(handler)
+
+
+
+# Set up tracer provider
+trace.set_tracer_provider(
+    TracerProvider(
+        resource=Resource.create({
+            SERVICE_NAME: "vendor-booking-api"
+        })
+    )
+)
+tracer = trace.get_tracer(__name__)
+
+# Configure span processor and exporter
+otlp_exporter = OTLPSpanExporter(endpoint="http://otel-collector:4317", insecure=True)
+span_processor = BatchSpanProcessor(otlp_exporter)
+trace.get_tracer_provider().add_span_processor(span_processor)
 
 app = FastAPI(title="Vendor Booking API")
 
@@ -15,87 +55,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ----------------------
-# In-Memory Datastores
-# ----------------------
-users = {}
-vendors = {}
-bookings = {}
+# Instrument FastAPI and SQLAlchemy
+FastAPIInstrumentor.instrument_app(app)
+SQLAlchemyInstrumentor().instrument(engine=engine.sync_engine)
 
-# ----------------------
-# Models
-# ----------------------
-class UserCreate(BaseModel):
-    name: str
-    email: str
-    phone: str
+@app.get("/")
+def read_root():
+    logger.info("Health check hit on root endpoint")
+    return {"msg": "Vendor Booking API is running"}
 
-class User(UserCreate):
-    id: str
-
-class VendorCreate(BaseModel):
-    name: str
-    type: str
-    location: str
-    slots_available: List[str]
-
-class Vendor(VendorCreate):
-    id: str
-
-class BookingCreate(BaseModel):
-    user_id: str
-    vendor_id: str
-    time_slot: str
-    status: str = "pending"
-
-class Booking(BookingCreate):
-    id: str
-
-# ----------------------
-# Users Endpoints
-# ----------------------
-@app.post("/users", response_model=User)
-def create_user(user: UserCreate):
-    user_id = str(uuid4())
-    new_user = User(id=user_id, **user.dict())
-    users[user_id] = new_user
-    return new_user
-
-@app.get("/users", response_model=List[User])
-def list_users():
-    return list(users.values())
-
-# ----------------------
-# Vendors Endpoints
-# ----------------------
-@app.post("/vendors", response_model=Vendor)
-def create_vendor(vendor: VendorCreate):
-    vendor_id = str(uuid4())
-    new_vendor = Vendor(id=vendor_id, **vendor.dict())
-    vendors[vendor_id] = new_vendor
-    return new_vendor
-
-@app.get("/vendors", response_model=List[Vendor])
-def list_vendors():
-    return list(vendors.values())
-
-# ----------------------
-# Bookings Endpoints
-# ----------------------
-@app.post("/bookings", response_model=Booking)
-def create_booking(booking: BookingCreate):
-    if booking.vendor_id not in vendors:
-        raise HTTPException(status_code=404, detail="Vendor not found")
-    if booking.user_id not in users:
-        raise HTTPException(status_code=404, detail="User not found")
-    if booking.time_slot not in vendors[booking.vendor_id].slots_available:
-        raise HTTPException(status_code=400, detail="Time slot not available")
-
-    booking_id = str(uuid4())
-    new_booking = Booking(id=booking_id, **booking.dict())
-    bookings[booking_id] = new_booking
-    return new_booking
-
-@app.get("/bookings", response_model=List[Booking])
-def list_bookings():
-    return list(bookings.values())
+# Include routers
+app.include_router(user.router, prefix="/users", tags=["Users"])
+app.include_router(vendor.router, prefix="/vendors", tags=["Vendors"])
+app.include_router(booking.router, prefix="/bookings", tags=["Bookings"])
