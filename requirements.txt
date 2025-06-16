@@ -8,9 +8,9 @@ alembic  # for migrations
 
 # Observability
 opentelemetry-api
-opentelemetry-sdk
-opentelemetry-instrumentation
-opentelemetry-exporter-otlp
+opentelemetry-sdk==1.25.0
+opentelemetry-instrumentation==0.46b0
+opentelemetry-exporter-otlp==1.25.0
 opentelemetry-instrumentation-fastapi
 opentelemetry-instrumentation-sqlalchemy
 opentelemetry-exporter-prometheus
